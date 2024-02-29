@@ -1,0 +1,117 @@
+# https://help.github.com/en/actions
+name: Process for Symfony 6
+description: Full CI process for Symfony 6
+branding:
+  icon: 'award'
+  color: red
+inputs:
+  #es_port:
+  #  description: 'The elastic search port'
+  #  default: 9209
+  database_url:
+    description: 'The database url'
+    default: ''
+  auth_json:
+    description: 'the content of auth.json file'
+    default: ''
+runs:
+  using: 'composite'
+  steps:
+    # —— Setup Github actions 🐙 —————————————————————————————————————————————
+    # https://github.com/actions/checkout (official)
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    # https://github.com/shivammathur/setup-php (community)
+    - name: Setup PHP, extensions and composer with shivammathur/setup-php
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.1'
+        extensions: mbstring, xml, ctype, iconv, intl, pdo, pdo_mysql, dom, filter, gd, iconv, json, mbstring
+      env:
+        update: 'true'
+
+    # https://github.com/zhulik/redis-action (community)
+    - name: Setup Redis with zhulik/redis-action
+      uses: zhulik/redis-action@1.1.0
+      with:
+        redis version: '5'
+    # —— Yarn 🐱 ————————————————————————————————————————————————————————————
+    - name: Yarn install
+      uses: actions/setup-node@v2
+      with:
+        node-version: '14'
+        #registry-url: npm.fontawesome.com
+    - run: yarn install
+      shell: bash
+      #env:
+      #NODE_AUTH_TOKEN: ${{ secrets.FONTAWESOME_NPM_AUTH_TOKEN }}
+
+    #- name: Yarn build
+    #  run: yarn run encore production
+    - name: Add AUTH JSON
+      shell: bash
+      run: echo '${{ inputs.auth_json }}' > auth.json
+    # —— Composer 🧙‍️ —————————————————————————————————————————————————————————
+    - name: Validate composer.json and composer.lock
+      run: composer validate
+      shell: bash
+
+    - name: Get composer cache directory
+      id: composer-cache
+      run: echo "::set-output name=dir::$(composer config cache-files-dir)"
+      shell: bash
+
+    - name: Cache composer dependencies
+      uses: actions/cache@v1
+      with:
+        path: ${{ steps.composer-cache.outputs.dir }}
+        key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+        restore-keys: ${{ runner.os }}-composer-
+
+    - name: Install Composer dependencies
+      run: composer install
+      shell: bash
+
+    # —— Symfony 🎵 ——————————————————————————————————————————————————————————
+    - name: Check Symfony requirements
+      run: vendor/bin/requirements-checker
+      shell: bash
+
+    - name: Check the Symfony console
+      run: |
+        bin/console about
+      shell: bash
+
+    ## —— JWT 💫 —————————————————————————————————————————————————————————————
+    - name: Generate the SSL keys
+      run: bin/console lexik:jwt:generate-keypair
+      shell: bash
+
+    ## —— DATABASE —————————————————————————————————————————————————————————————
+    - name: Create DB
+      run: bin/console doctrine:database:create --no-interaction --env="test"
+      shell: bash
+      env:
+        DATABASE_URL: ${{inputs.database_url}}
+
+    ## —— DATABASE SCHEMA —————————————————————————————————————————————————————————————
+    - name: Create DB schema
+      run: bin/console doctrine:migrations:migrate --no-interaction --env="test"
+      shell: bash
+      env:
+        DATABASE_URL: ${{inputs.database_url}}
+
+    ## —— Tests ✅ ———————————————————————————————————————————————————————————
+    # We use the dev env here
+    - name: Load Doctrine fixtures
+      run: bin/console hautelook:fixtures:load --no-interaction --env="test"
+      shell: bash
+      env:
+        DATABASE_URL: ${{inputs.database_url}}
+
+    - name: Run functionnal and unit tests
+      run: vendor/bin/phpunit
+      shell: bash
+      env:
+        DATABASE_URL: ${{inputs.database_url}}

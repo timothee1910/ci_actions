@@ -1,0 +1,128 @@
+name: CI / Rector
+description: 'Create a comment for a commit on GitHub when rector request changes'
+inputs:
+  token:
+    description: 'The GitHub authentication token'
+    default: ${{ github.token }}
+  auth_json:
+    description: 'The auth.json (for other bundles)'
+    default: ''
+runs:
+  using: 'composite'
+  steps:
+      - uses: actions/checkout@v2
+        with:
+          # Solves the not "You are not currently on a branch" problem, see https://github.com/actions/checkout/issues/124#issuecomment-586664611
+          ref: ${{ github.event.pull_request.head.ref }}
+          # Must be used to trigger workflow after push
+          token: ${{ inputs.token }}
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.1
+          coverage: none
+
+      - name: Add AUTH JSON
+        shell: bash
+        run: echo '${{ inputs.auth_json }}' > auth.json
+
+      - run: composer install --no-progress --ansi
+        shell: bash
+
+      - run: vendor/bin/phpstan
+        shell: bash
+        id: phpstan-check
+
+      ## First run Rector without --dry-run, it would stop the process with exit 1 here
+      - run: vendor/bin/rector process --ansi --no-progress-bar > rector.log
+        shell: bash
+        id: rector-check
+
+      - name: Exit for Rector modified files
+        shell: bash
+        id: rector-exit-check
+        run: echo ::set-output name=error::$(if [ `wc -l rector.log | awk '{print $1}'` -ge "6" ]; then echo "true"; else echo "false"; fi)
+
+      - name: Message Length
+        shell: bash
+        id: rector-length-check
+        run: echo ::set-output name=length::$(if [ `wc -m rector.log | awk '{print $1}'` -ge "64000" ]; then echo "false"; else echo "true"; fi)
+
+      - id: get-comment-body
+        shell: bash
+        if:  steps.rector-exit-check.outputs.error == 'true'
+        run: |
+          body=$(cat rector.log)
+          body="${body//'%'/'%25'}"
+          body="${body//$'\n'/'%0A'}"
+          body="${body//$'\r'/'%0D'}"
+          body="${body//$'\e[31m'/''}"
+          body="${body//$'\e[32m'/''}"
+          body="${body//$'\e[33m'/''}"
+          body="${body//$'\e[36m'/''}"
+          body="${body//$'\e[39m'/''}"
+          body="${body//$'\e[24m'/''}"
+          body="${body//$'\e[22m'/''}"
+          body="${body//$'\e[49m'/''}"
+          body="${body//$'\e[30m'/''}"
+          body="${body//$'\e[4m'/''}"
+          body="${body//$'\e[1m'/''}"
+          body="${body//$'\e[42m'/''}"
+          body="${body//$'\e[30;42m'/''}"
+          body="${body//$'\e[39;49m'/''}"
+          body="${body//'---------- begin diff ----------'/''}"
+          body="${body//'    ----------- end diff -----------'/'``` '}"
+          body="${body//'@@ @@'/'```diff'}"
+          echo "::set-output name=body::$body"
+
+      - name: Create commit comment
+        if: steps.rector-exit-check.outputs.error == 'true' && steps.rector-length-check.outputs.length == 'true'
+        uses: peter-evans/commit-comment@v1
+        with:
+          body: |
+            <details><summary>Some changes are requested by Rector:</summary><p>
+
+              ${{ steps.get-comment-body.outputs.body }}
+
+            </p></details>
+
+      - name: Create commit comment for exeed length
+        if: steps.rector-exit-check.outputs.error == 'true' && steps.rector-length-check.outputs.length == 'false'
+        uses: peter-evans/commit-comment@v1
+        with:
+          body: |
+            <details><summary>Some changes are requested by Rector (too long, check Github Action):</summary><p>
+
+              ```
+                                                  $$$$
+                                                $$    $$
+                                                $$    $$
+                                                $$    $$
+                                                $$    $$
+                                                $$    $$
+                                            $$$$$$    $$$$$$
+                                          $$    $$    $$    $$$$
+                                          $$    $$    $$    $$  $$
+                                  $$$$$$  $$    $$    $$    $$    $$
+                                  $$    $$$$                $$    $$
+                                  $$      $$                      $$
+                                    $$    $$                      $$
+                                    $$$  $$                      $$
+                                      $$                          $$
+                                      $$$                        $$
+                                        $$                      $$$
+                                        $$$                    $$
+                                          $$                    $$
+                                          $$$                $$$
+                                            $$                $$
+                                            $$$$$$$$$$$$$$$$$$$$
+              ```
+
+            </p></details>
+
+      - name: Stop Action -> Rector changes 
+        shell: bash
+        if: steps.rector-exit-check.outputs.error == 'true'
+        run: |
+          cat rector.log
+          exit 1
